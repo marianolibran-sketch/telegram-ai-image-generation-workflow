@@ -1,0 +1,1072 @@
+{
+  "name": "Affiliate Content Bot | Telegram + Cloudflare AI (Community Template)",
+  "nodes": [
+    {
+      "parameters": {
+        "updates": [
+          "message"
+        ],
+        "additionalFields": {}
+      },
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -16,
+        1344
+      ],
+      "id": "636c08d1-bf67-423f-aa24-62a753bd1966",
+      "name": "Telegram Trigger"
+    },
+    {
+      "parameters": {
+        "jsCode": "const m = $input.first().json.message;\nif (!m || m.chat?.type !== 'private') return [];\n// CONFIGURACIÓN OBLIGATORIA: colocá tu propio chat_id numérico.\n// No publiques tu chat_id personal en GitHub.\nconst CHAT_PERMITIDO = 'YOUR_TELEGRAM_CHAT_ID';\nconst chatId = String(m.chat.id);\nif (chatId !== CHAT_PERMITIDO) return [];\nconst texto = String(m.text || '').trim().toLocaleLowerCase('es').replace(/\\s+/g, ' ');\nlet evento = '';\nif (texto === 'iniciar ciclo de generación') evento = 'iniciar';\nelse if (texto === 'reiniciar ciclo') evento = 'reiniciar';\nelse if (Array.isArray(m.photo) && m.photo.length > 0 && !m.media_group_id) evento = 'foto';\nif (!evento) return [];\nconst fileId = evento === 'foto' ? m.photo[m.photo.length - 1].file_id : '';\nreturn [{ json: {\n  chat_id: chatId,\n  evento,\n  file_id: fileId,\n  caption: String(m.caption || '').trim(),\n  mensaje_id: String(m.message_id || ''),\n} }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        192,
+        1344
+      ],
+      "id": "26b07f6b-6ec9-4e55-8f64-64aeb4a34ae4",
+      "name": "Normalizar entrada"
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "value": "Ciclos_Afiliados",
+          "mode": "name"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "chat_id",
+              "keyValue": "={{ $('Normalizar entrada').first().json.chat_id }}"
+            }
+          ]
+        },
+        "limit": 1
+      },
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        416,
+        1344
+      ],
+      "id": "fc108231-6e71-43bb-af6e-54a02be55c01",
+      "name": "Leer ciclo guardado",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const ev = $('Normalizar entrada').first().json;\nconst fila = $input.first()?.json || {};\nconst row = {\n  chat_id: fila.chat_id,\n  estado: fila.Estado ?? fila.estado,\n  cantidad: fila.Cantidad ?? fila.cantidad,\n  productos_json: fila.Productos_Json ?? fila.productos_json,\n  ciclo_id: fila.Ciclo_id ?? fila.ciclo_id,\n};\nconst actual = row.chat_id && String(row.chat_id) === ev.chat_id ? row : {};\nlet productos;\ntry { productos = JSON.parse(actual.productos_json || '[]'); } catch { productos = []; }\nif (!Array.isArray(productos)) productos = [];\nconst activo = actual.estado === 'recibiendo';\nconst resultado = (modo, respuesta, extra = {}) => [{json: {\n  modo, respuesta, chat_id: ev.chat_id,\n  estado: extra.estado || actual.estado || '',\n  cantidad: extra.cantidad ?? productos.length,\n  productos_json: extra.productos_json || JSON.stringify(productos),\n  ciclo_id: extra.ciclo_id || actual.ciclo_id || '',\n  finalizado: Boolean(extra.finalizado),\n}}];\nconst formato = 'Nombre: Nombre del producto\\nID: CODIGO-OFICIAL';\nif (ev.evento === 'iniciar') {\n  // Si el ciclo ya tiene 9 productos, este mismo comando vuelve a lanzar la IA\n  // sin perder las fotografías/IDs guardados.\n  if (actual.estado === 'preparado' && productos.length === 9) {\n    return resultado('guardar',\n      '🎨 Reanudando generación con los 9 productos ya guardados. No tenés que enviarlos de nuevo.',\n      {estado:'preparado', cantidad:9, productos_json:JSON.stringify(productos), finalizado:true});\n  }\n  if (activo) return resultado('aviso', `Ya hay un ciclo activo. Enviá la foto del producto ${productos.length + 1}. Si querés empezar desde cero, escribí: reiniciar ciclo`);\n  const ciclo = `${Date.now()}-${ev.chat_id}`;\n  return resultado('guardar', `✅ Ciclo iniciado.\\n\\nEnviá UNA foto del producto 1 con este pie de foto:\\n\\n${formato}`, {estado:'recibiendo', cantidad:0, productos_json:'[]', ciclo_id:ciclo});\n}\nif (ev.evento === 'reiniciar') {\n  const ciclo = `${Date.now()}-${ev.chat_id}`;\n  return resultado('guardar', `🔄 Ciclo reiniciado.\\n\\nEnviá UNA foto del producto 1 con este pie de foto:\\n\\n${formato}`, {estado:'recibiendo', cantidad:0, productos_json:'[]', ciclo_id:ciclo});\n}\nif (ev.evento !== 'foto' || !activo || productos.length >= 9) return [];\nif (productos.some(p => String(p.mensaje_id) === ev.mensaje_id)) return [];\nconst caption = ev.caption.replace(/\\r\\n/g, '\\n');\nconst valor = (campo) => {\n  const re = new RegExp(`^\\\\s*${campo}\\\\s*:\\\\s*(.+?)\\\\s*$`, 'im');\n  return (caption.match(re)?.[1] || '').trim();\n};\nconst nombre = valor('Nombre');\nconst id = valor('ID');\nif (!nombre || !id) return resultado('aviso', `❌ Falta el nombre o ID del producto ${productos.length + 1}.\\nReenviá UNA foto con este pie de foto:\\n\\n${formato}`);\nconst indice = productos.length + 1;\nproductos.push({\n  indice, nombre, id,\n  file_id: ev.file_id,\n  mensaje_id: ev.mensaje_id,\n  precio: valor('Precio'),\n  precio_anterior: valor('Precio anterior'),\n  descuento: valor('Descuento'),\n});\nconst finalizado = indice === 9;\nconst respuesta = finalizado\n  ? '✅ Guardé los 9 productos con sus IDs.\\nIniciando el procesamiento de los 9 productos con Cloudflare. Si Cloudflare bloquea una foto, se conservará la original como respaldo. En caso de error técnico, escribí iniciar ciclo de generación para reintentar sin recargar fotos.'\n  : `✅ Producto ${indice}/9 guardado: ${nombre} (${id}).\\n\\nAhora enviá UNA foto del producto ${indice + 1} con:\\n\\n${formato}`;\nreturn resultado('guardar', respuesta, {\n  estado: finalizado ? 'preparado' : 'recibiendo',\n  cantidad: productos.length,\n  productos_json: JSON.stringify(productos),\n  finalizado,\n});"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        640,
+        1344
+      ],
+      "id": "2b1bd691-8e39-4e94-948b-9093e6d5fb3b",
+      "name": "Gestionar ciclo y productos"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "1d27bc0a-cb13-4a4c-882c-1db1e75694ba",
+                    "leftValue": "={{ $json.modo }}",
+                    "rightValue": "guardar",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Guardar"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "acbce090-4457-4752-b52e-ba7b986f0648",
+                    "leftValue": "={{ $json.modo }}",
+                    "rightValue": "aviso",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Avisar"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        864,
+        1344
+      ],
+      "id": "ca5bc8de-3ad7-408b-856a-7853a1437cd4",
+      "name": "Guardar o responder"
+    },
+    {
+      "parameters": {
+        "operation": "upsert",
+        "dataTableId": {
+          "__rl": true,
+          "value": "Ciclos_Afiliados",
+          "mode": "name"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "chat_id",
+              "keyValue": "={{ $('Gestionar ciclo y productos').first().json.chat_id }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "chat_id": "={{ $node[\"Gestionar ciclo y productos\"].json.chat_id }}",
+            "estado": "={{ $('Gestionar ciclo y productos').first().json.estado }}",
+            "cantidad": "={{ $('Gestionar ciclo y productos').first().json.cantidad }}",
+            "productos_json": "={{ $('Gestionar ciclo y productos').first().json.productos_json }}",
+            "ciclo_id": "={{ $('Gestionar ciclo y productos').first().json.ciclo_id }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "chat_id",
+              "displayName": "chat_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "estado",
+              "displayName": "estado",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "cantidad",
+              "displayName": "cantidad",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "productos_json",
+              "displayName": "productos_json",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "ciclo_id",
+              "displayName": "ciclo_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        1104,
+        1216
+      ],
+      "id": "e52dd47c-f24d-4acf-84b3-fbf66e99dee3",
+      "name": "Guardar estado"
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('Gestionar ciclo y productos').first().json.chat_id }}",
+        "text": "={{ $('Gestionar ciclo y productos').first().json.respuesta }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1360,
+        1216
+      ],
+      "id": "340007c9-1e83-4493-8db0-dacbe0738ee7",
+      "name": "Telegram - pedir siguiente"
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('Gestionar ciclo y productos').first().json.chat_id }}",
+        "text": "={{ $('Gestionar ciclo y productos').first().json.respuesta }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1104,
+        1552
+      ],
+      "id": "11315446-871d-44b3-9ebd-20ce61ed5e64",
+      "name": "Telegram - corregir formato"
+    },
+    {
+      "parameters": {
+        "jsCode": "const actual = $('Gestionar ciclo y productos').first().json;\nif (!actual.finalizado) return [];\nconst productos = JSON.parse(actual.productos_json || '[]');\nif (productos.length !== 9) throw new Error('Se esperaban 9 productos.');\nconst descripcion = productos.map(p => `${p.indice}. ${p.nombre}\\nID: ${p.id}`).join('\\n\\n');\nreturn productos.map(p => ({json: {\n  chat_id: actual.chat_id,\n  ciclo_id: actual.ciclo_id,\n  orden: p.indice,\n  nombre: p.nombre,\n  id: p.id,\n  file_id: p.file_id,\n  precio: p.precio,\n  precio_anterior: p.precio_anterior,\n  descuento: p.descuento,\n  descripcion_total: descripcion,\n}}));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1616,
+        1216
+      ],
+      "id": "4b46b780-76c5-4aa8-a339-b2354b4af210",
+      "name": "Preparar 9 solicitudes individuales IA"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        1872,
+        1216
+      ],
+      "id": "b9062e94-0e7e-4830-9dd9-6b0785d8dfbe",
+      "name": "UNO por UNO - Bucle IA (pendiente)"
+    },
+    {
+      "parameters": {
+        "resource": "file",
+        "fileId": "={{ $json.file_id }}",
+        "additionalFields": {}
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        2112,
+        1456
+      ],
+      "id": "f6058dba-3b5e-4d28-9fa7-c2b266f042f2",
+      "name": "Get a file"
+    },
+    {
+      "parameters": {
+        "jsCode": "const resultado = $input.first().json || {};\nconst producto = $('Vincular datos y foto').first(0, $runIndex)?.json;\nif (!producto?.orden || !producto?.file_id) {\n  throw new Error('No se pudieron recuperar los datos del producto para esta vuelta del bucle');\n}\nconst contenido = resultado?.result?.image ?? resultado?.image;\nif (typeof contenido === 'string' && contenido.length > 100) {\n  const limpio = contenido.replace(/^data:image\\/[a-zA-Z0-9+.-]+;base64,/, '').trim();\n  const extension = limpio.startsWith('/9j/') ? 'jpg' : 'png';\n  const mime = extension === 'jpg' ? 'image/jpeg' : 'image/png';\n  const archivo = await this.helpers.prepareBinaryData(\n    Buffer.from(limpio, 'base64'),\n    `producto_${producto.orden}_portada.${extension}`,\n    mime\n  );\n  return [{ json: { ...producto, fuente_portada: 'generada_ia' }, binary: { portada: archivo } }];\n}\n// n8n entrega el error 3030 como JSON porque el HTTP Request usa Continue (regular output).\nconst detalle = JSON.stringify(resultado);\nif (!/(3030|output has been flagged|choose another prompt\\s*\\/\\s*input image)/i.test(detalle)) {\n  throw new Error('Cloudflare no produjo una imagen. No parece ser el bloqueo 3030: ' + detalle.slice(0, 700));\n}\n// Respaldar usando la foto ORIGNAL de Telegram (NO la miniatura de 500 px).\nconst original = $('Get a file').first(0, $runIndex)?.binary?.data;\nif (!original) throw new Error('Bloqueo 3030 y no se pudo recuperar la foto original de Telegram');\nreturn [{\n  json: { ...producto, fuente_portada: 'respaldo_3030', aviso_portada: 'Imagen rechazada por Cloudflare; se usa foto original.' },\n  binary: { portada: { ...original } },\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2928,
+        1360
+      ],
+      "id": "5c7bebc6-6f80-4a24-9151-cfeaa1eefc48",
+      "name": "Guardar Portada",
+      "notes": "Respuesta Cloudflare -> binario; ante bloqueo 3030 -> binario original de Get a file de la MISMA vuelta del bucle. Otros errores detienen el flujo. Se conserva un indicador del respaldo."
+    },
+    {
+      "parameters": {
+        "jsCode": "const resultado = $input.first().json || {};\nconst producto = $('Vincular datos y foto').first(0, $runIndex)?.json;\nif (!producto?.orden || !producto?.file_id) {\n  throw new Error('No se pudieron recuperar los datos del producto para esta vuelta del bucle');\n}\nconst contenido = resultado?.result?.image ?? resultado?.image;\nif (typeof contenido === 'string' && contenido.length > 100) {\n  const limpio = contenido.replace(/^data:image\\/[a-zA-Z0-9+.-]+;base64,/, '').trim();\n  const extension = limpio.startsWith('/9j/') ? 'jpg' : 'png';\n  const mime = extension === 'jpg' ? 'image/jpeg' : 'image/png';\n  const archivo = await this.helpers.prepareBinaryData(\n    Buffer.from(limpio, 'base64'),\n    `producto_${producto.orden}_collage.${extension}`,\n    mime\n  );\n  return [{ json: { ...producto, fuente_collage: 'generada_ia' }, binary: { collage: archivo } }];\n}\n// n8n entrega el error 3030 como JSON porque el HTTP Request usa Continue (regular output).\nconst detalle = JSON.stringify(resultado);\nif (!/(3030|output has been flagged|choose another prompt\\s*\\/\\s*input image)/i.test(detalle)) {\n  throw new Error('Cloudflare no produjo una imagen. No parece ser el bloqueo 3030: ' + detalle.slice(0, 700));\n}\n// Respaldar usando la foto ORIGNAL de Telegram (NO la miniatura de 500 px).\nconst original = $('Get a file').first(0, $runIndex)?.binary?.data;\nif (!original) throw new Error('Bloqueo 3030 y no se pudo recuperar la foto original de Telegram');\nreturn [{\n  json: { ...producto, fuente_collage: 'respaldo_3030', aviso_collage: 'Imagen rechazada por Cloudflare; se usa foto original.' },\n  binary: { collage: { ...original } },\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2928,
+        1664
+      ],
+      "id": "6df4e0a6-91b9-47f8-86cc-833643e062e2",
+      "name": "Guardar Collage",
+      "notes": "Respuesta Cloudflare -> binario; ante bloqueo 3030 -> binario original de Get a file de la MISMA vuelta del bucle. Otros errores detienen el flujo. Se conserva un indicador del respaldo."
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        3520,
+        1520
+      ],
+      "id": "5d09f37d-94ef-49ee-a45f-5db3d156cc94",
+      "name": "Merge"
+    },
+    {
+      "parameters": {
+        "jsCode": "const unido = $input.first();\nif (!unido.binary?.portada || !unido.binary?.collage) {\n  throw new Error('Merge no entregó las dos imágenes para este producto');\n}\nif (!unido.json?.orden || !unido.json?.chat_id) {\n  throw new Error('Faltan los datos del producto después de Merge');\n}\nreturn [{ json: unido.json, binary: unido.binary }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3840,
+        1632
+      ],
+      "id": "8553a354-ea2b-4029-b907-be22c0813f2d",
+      "name": "Resultado del Producto"
+    },
+    {
+      "parameters": {
+        "jsCode": "const productos = $input.all().sort((a, b) => a.json.orden - b.json.orden);\nif (productos.length !== 9) {\n  throw new Error(`Se esperaban 9 productos terminados, llegaron ${productos.length}`);\n}\nconst envios=[];\nfor (const p of productos) {\n  for (const tipo of ['portada','collage']) {\n    const f = p.binary?.[tipo];\n    if (!f) throw new Error(`Falta ${tipo} del producto ${p.json.orden}`);\n    const fuente = p.json[tipo === 'portada' ? 'fuente_portada' : 'fuente_collage'];\n    const respaldo = fuente === 'respaldo_3030';\n    const comentario = respaldo\n      ? tipo === 'collage'\n        ? 'AVISO: la IA bloqueó el collage. Se adjunta la foto original como respaldo; NO representa cuatro perspectivas.'\n        : 'AVISO: la IA bloqueó la foto profesional. Portada compuesta con la foto original.'\n      : 'Imagen generada con Cloudflare.';\n    envios.push({\n      json: {\n        chat_id: p.json.chat_id,\n        orden: p.json.orden,\n        nombre: p.json.nombre,\n        id: p.json.id,\n        tipo,\n        fuente,\n        respaldo,\n        caption: `Producto ${p.json.orden} - ${tipo}\\n${comentario}`,\n      },\n      binary: {\n        data: {\n          ...f,\n          fileName: `producto_${p.json.orden}_${tipo}.png`,\n          mimeType: 'image/png',\n          fileExtension: 'png',\n        }\n      }\n    });\n  }\n}\nreturn envios;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2112,
+        1024
+      ],
+      "id": "41d1c5ba-63be-4de9-a0a6-afb4d5e37109",
+      "name": "Preparar 18 Imagenes"
+    },
+    {
+      "parameters": {
+        "operation": "sendDocument",
+        "chatId": "={{ $json.chat_id }}",
+        "binaryData": true,
+        "additionalFields": {
+          "caption": "={{ $json.caption }}"
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        2768,
+        1024
+      ],
+      "id": "fba70687-f9b3-40c0-aab0-6e48c551bdaa",
+      "name": "Send a document"
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('Preparar 9 solicitudes individuales IA').first().json.chat_id }}",
+        "text": "={{ (() => { const envios=$('Preparar 18 Imagenes').all().map(x=>x.json); const fallos=envios.filter(e=>e.respaldo); const detalle=fallos.map(e=>'Producto '+e.orden+' ('+e.tipo+')').join(', '); return '✅ Procesamiento terminado: 9 productos, 18 archivos.\\n\\n'+$('Preparar 9 solicitudes individuales IA').first().json.descripcion_total+(fallos.length?'\\n\\n⚠️ '+fallos.length+' archivo(s) de respaldo debido al bloqueo 3030 de Cloudflare: '+detalle+'. Revisá esos productos antes de publicar.':'\\n\\n✅ No se necesitaron imágenes de respaldo.'); })() }}",
+        "additionalFields": {}
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        2976,
+        1024
+      ],
+      "id": "a4bc8314-3b8e-4e25-b613-2a1a3a70f3bb",
+      "name": "Send a text message",
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.cloudflare.com/client/v4/accounts/YOUR_CLOUDFLARE_ACCOUNT_ID/ai/run/@cf/black-forest-labs/flux-2-klein-4b",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "prompt",
+              "value": "=Crear una fotografía comercial profesional, fotorrealista y de alta calidad del producto real que aparece en la imagen de referencia (input_image_0).\n\nProducto: {{ $json.nombre }}.\n\nCONSERVAR exactamente su forma, diseño, colores, materiales, proporciones y detalles que se vean en la imagen. No inventar accesorios, funciones o variantes. No reemplazar el producto por otro parecido.\n\nEstilo de fotografía de catálogo premium: fondo negro o gris muy oscuro, iluminación de estudio elegante y contrastada. Producto protagonista, nítido y centrado.\n\nMUY IMPORTANTE SOBRE LA COMPOSICIÓN: utilizar imagen vertical 4:5; situar el producto completo solamente en la zona central aproximada, entre el 28% y el 75% de la altura. Mantener la parte superior y la inferior despejadas para agregar el texto después, sin cubrir al producto.\n\nNo generar textos, letras, números, precios, marcas añadidas, etiquetas, recuadros, bordes, logos ni interfaz de una tienda. Solamente la fotografía profesional del producto sobre fondo oscuro.\n\nCrear UNA única imagen. No un collage."
+            },
+            {
+              "name": "width",
+              "value": "1024"
+            },
+            {
+              "name": "height",
+              "value": "1280"
+            },
+            {
+              "parameterType": "formBinaryData",
+              "name": "input_image_0",
+              "inputDataFieldName": "data"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 180000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        2752,
+        1360
+      ],
+      "id": "f61eaa2a-ef4c-4234-b4b6-bb96050d0668",
+      "name": "CF - PORTADA (FLUX.2)",
+      "onError": "continueRegularOutput",
+      "notes": "Si Cloudflare devuelve el error 3030, la respuesta seguirá por la salida normal y el nodo Guardar utilizará la foto original de Telegram. Los demás errores se detienen para revisión. Credencial privada existente en n8n."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.cloudflare.com/client/v4/accounts/YOUR_CLOUDFLARE_ACCOUNT_ID/ai/run/@cf/black-forest-labs/flux-2-klein-4b",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "prompt",
+              "value": "=Create a vertical 4:5 image showing a 2x2 collage of four different photos of the same product from the reference image.\n\nKeep the product consistent with the reference.\nUse realistic photography.\nNo text."
+            },
+            {
+              "name": "width",
+              "value": "1024"
+            },
+            {
+              "name": "height",
+              "value": "1280"
+            },
+            {
+              "parameterType": "formBinaryData",
+              "name": "input_image_0",
+              "inputDataFieldName": "data"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 180000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        2752,
+        1664
+      ],
+      "id": "b2482644-cbed-400e-bf9f-acb89b71344e",
+      "name": "CF - COLLAGE (FLUX.2)",
+      "onError": "continueRegularOutput",
+      "notes": "Si Cloudflare devuelve el error 3030, la respuesta seguirá por la salida normal y el nodo Guardar utilizará la foto original de Telegram. Los demás errores se detienen para revisión. Credencial privada existente en n8n."
+    },
+    {
+      "parameters": {
+        "operation": "resize",
+        "options": {}
+      },
+      "id": "89ad8ecc-13c7-4e69-a401-45637c3b2597",
+      "name": "Reducir foto para Cloudflare",
+      "type": "n8n-nodes-base.editImage",
+      "typeVersion": 1.1,
+      "position": [
+        2352,
+        1520
+      ],
+      "notes": "FLUX.2 Klein requiere referencias de menos de 512x512. 500x500 máximo, sin deformar."
+    },
+    {
+      "parameters": {
+        "jsCode": "const f = $input.first();\nconst producto = $('Preparar 9 solicitudes individuales IA').all()[ $runIndex ]?.json;\nif (!producto) throw new Error(`Faltan los metadatos del producto ${$runIndex + 1}`);\nif (!f.binary?.data) throw new Error('Telegram no proporcionó archivo binario');\nreturn [{json:{...producto},binary:{data:f.binary.data}}];"
+      },
+      "id": "ba568b83-d268-4ccc-9bc3-6ad8c74bba1b",
+      "name": "Vincular datos y foto",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2544,
+        1520
+      ],
+      "notes": "Cada ejecución del bucle liga los campos del producto con la foto reducida."
+    },
+    {
+      "parameters": {
+        "operation": "resize",
+        "dataPropertyName": "portada",
+        "width": 1080,
+        "height": 1350,
+        "resizeOption": "ignoreAspectRatio",
+        "options": {
+          "destinationKey": "portada",
+          "fileName": "={{ \"producto_\" + $json.orden + \"_portada.png\" }}",
+          "format": "png"
+        }
+      },
+      "id": "6536945d-1b4e-4630-880a-8c4f524cfec1",
+      "name": "Formato final 1080x1350 - Portada",
+      "type": "n8n-nodes-base.editImage",
+      "typeVersion": 1.1,
+      "position": [
+        3104,
+        1360
+      ],
+      "notes": "Salida 1080x1350 con aspecto 4:5 exacto. Primero la IA genera 1024x1280, ya en 4:5. | Convierte también fotos originales de respaldo a PNG."
+    },
+    {
+      "parameters": {
+        "operation": "resize",
+        "dataPropertyName": "collage",
+        "width": 1080,
+        "height": 1350,
+        "resizeOption": "ignoreAspectRatio",
+        "options": {
+          "destinationKey": "collage",
+          "fileName": "={{ \"producto_\" + $json.orden + \"_collage.png\" }}",
+          "format": "png"
+        }
+      },
+      "id": "903a3278-00ca-4b3d-acf3-dd606155858c",
+      "name": "Formato final 1080x1350 - Collage",
+      "type": "n8n-nodes-base.editImage",
+      "typeVersion": 1.1,
+      "position": [
+        3104,
+        1664
+      ],
+      "notes": "Salida 1080x1350 con aspecto 4:5 exacto. Primero la IA genera 1024x1280, ya en 4:5. | Convierte también fotos originales de respaldo a PNG."
+    },
+    {
+      "parameters": {
+        "operation": "multiStep",
+        "dataPropertyName": "portada",
+        "operations": {
+          "operations": [
+            {
+              "operation": "draw",
+              "color": "#101217",
+              "startPositionX": 0,
+              "startPositionY": 0,
+              "endPositionX": 1080,
+              "endPositionY": 355
+            },
+            {
+              "operation": "draw",
+              "color": "#101217",
+              "startPositionX": 0,
+              "startPositionY": 1035,
+              "endPositionX": 1080,
+              "endPositionY": 1350
+            },
+            {
+              "operation": "draw",
+              "color": "#f6f6f6",
+              "startPositionX": 52,
+              "startPositionY": 1082,
+              "endPositionX": 1028,
+              "endPositionY": 1297,
+              "cornerRadius": 26
+            },
+            {
+              "operation": "text",
+              "text": "={{ $json.precio_anterior && $json.descuento ? \"ANTES: \" + $json.precio_anterior : \" \" }}",
+              "fontSize": 29,
+              "fontColor": "#aab0b9",
+              "positionX": 0,
+              "positionY": 24,
+              "verticalAlignment": "north"
+            },
+            {
+              "operation": "text",
+              "text": "={{ $json.precio ? String($json.precio) : \" \" }}",
+              "fontSize": 68,
+              "fontColor": "#ffffff",
+              "positionX": 0,
+              "positionY": 78,
+              "verticalAlignment": "north"
+            },
+            {
+              "operation": "draw",
+              "color": "={{ $json.descuento ? '#248951' : '#101217' }}",
+              "startPositionX": 820,
+              "startPositionY": 112,
+              "endPositionX": 1040,
+              "endPositionY": 172,
+              "cornerRadius": 14
+            },
+            {
+              "operation": "text",
+              "text": "={{ $json.descuento ? String($json.descuento) : \" \" }}",
+              "fontSize": 29,
+              "fontColor": "#ffffff",
+              "positionX": 410,
+              "positionY": 119,
+              "verticalAlignment": "north"
+            },
+            {
+              "operation": "text",
+              "text": "={{ String($json.nombre || \"Producto\").replace(/\\s+/g,\" \").trim() }}",
+              "fontSize": 44,
+              "fontColor": "#f6f7fa",
+              "positionX": 0,
+              "positionY": "={{ $json.precio ? 215 : 150 }}",
+              "verticalAlignment": "north",
+              "lineLength": 42
+            },
+            {
+              "operation": "text",
+              "text": "PEGÁ ESTE CÓDIGO EN EL BUSCADOR DE MERCADO LIBRE",
+              "fontSize": 22,
+              "fontColor": "#22262b",
+              "positionX": 0,
+              "positionY": 1110,
+              "verticalAlignment": "north"
+            },
+            {
+              "operation": "draw",
+              "primitive": "line",
+              "color": "#c2c7cc",
+              "startPositionX": 120,
+              "startPositionY": 1178,
+              "endPositionX": 960,
+              "endPositionY": 1178
+            },
+            {
+              "operation": "text",
+              "text": "={{ \"ID: \" + String($json.id || \"SIN ID\").trim() }}",
+              "fontSize": "={{ String($json.id || \"\").length > 21 ? 32 : String($json.id || \"\").length > 14 ? 43 : 59 }}",
+              "fontColor": "#11151a",
+              "positionX": 0,
+              "positionY": 1207,
+              "verticalAlignment": "north"
+            }
+          ]
+        },
+        "options": {
+          "destinationKey": "portada",
+          "format": "png"
+        }
+      },
+      "type": "n8n-nodes-base.editImage",
+      "typeVersion": 1.1,
+      "position": [
+        3296,
+        1360
+      ],
+      "id": "864bf1cc-51f7-43b6-8647-2f7749a2be5a",
+      "name": "COMPONER PORTADA - TEXTOS EXACTOS",
+      "notesInFlow": true,
+      "notes": "Edit Image dibuja las franjas y escribe los datos guardados. Si indica Default font not found: abrir Options y elegir una fuente instalada desde el desplegable. Si no hay precios, quedan omitidos (no se inventan). | Convierte también fotos originales de respaldo a PNG."
+    },
+    {
+      "parameters": {
+        "content": "## 01 · TELEGRAM: CONECTÁ TU PROPIO BOT\n\n**No uses el bot del autor. Creá el tuyo.**\n\n1. En Telegram abrí **@BotFather** y ejecutá `/newbot`.\n2. Guardá el token **en privado**. En n8n: Credentials → Telegram API → pegá TU token.\n3. Asigná esa misma credencial a **TODOS** los nodos Telegram:\n   - `Telegram Trigger` (recibir mensajes)\n   - `Get a file` (descargar foto)\n   - `Telegram - pedir siguiente` y `Telegram - corregir formato`\n   - `Send a document` y `Send a text message`\n4. No borres ni cambies `chat_id`, `file_id` ni las expresiones de los nodos.\n5. Si usás n8n local/Docker, configurá una URL pública **HTTPS** para el webhook de Telegram.\n\n**Guías oficiales (actualizadas):**\n- https://core.telegram.org/bots/features#botfather\n- https://docs.n8n.io/integrations/builtin/credentials/telegram/\n\n⚠️ Nunca pegues el token en el workflow, notas, capturas o GitHub.\n**Tutorial en video:** se añadirá solo cuando esté verificado; la documentación oficial es la referencia.\n\n**CONFIGURACIÓN OBLIGATORIA:** en `Normalizar entrada` reemplazá `YOUR_TELEGRAM_CHAT_ID` por el ID numérico de TU chat privado. Si no lo hacés, el workflow ignorará todos los mensajes. Este filtro impide que cualquier persona use tu bot sin autorización. No publiques tu ID real en GitHub.",
+        "height": 600,
+        "width": 770,
+        "color": 5
+      },
+      "id": "b30120c7-9f87-4f95-970c-820625923e0e",
+      "name": "Nota - 01 · TELEGRAM Y RECEPCIÓN",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -32,
+        624
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 02 · DATA TABLE — CREAR Y VINCULAR\n\n**Obligatorio antes de ejecutar.** En tu instancia de n8n, creá una Data Table llamada `Ciclos_Afiliados` con estas 5 columnas (nombres exactos y minúsculas):\n\n| Columna | Tipo |\n| --- | --- |\n| `chat_id` | String / Text |\n| `estado` | String / Text |\n| `cantidad` | Number |\n| `productos_json` | String / Text (debe admitir JSON largo) |\n| `ciclo_id` | String / Text |\n\n1. Abrí **Leer ciclo guardado** y seleccioná TU tabla `Ciclos_Afiliados` en **Data Table**. Conservá el filtro `chat_id`.\n2. Abrí **Guardar estado** y seleccioná LA MISMA tabla en **Data Table**. Conservá la operación **Upsert**, el filtro por `chat_id` y el mapeo de columnas.\n3. Si la tabla no aparece, actualizá el selector y elegila manualmente; **el nombre en el JSON no garantiza que n8n encuentre automáticamente una tabla de otra instancia**.\n4. No copies tablas con datos personales, IDs de Telegram ni fotos al repositorio. La tabla comienza vacía y se llena cuando se utiliza el bot.\n\n**Atención:** `Guardar estado` y `Leer ciclo guardado` deben apuntar a la misma tabla. No modifiques nombres de columnas sin actualizar ambos nodos y el código.\n\nGuía: https://docs.n8n.io/data/data-tables/",
+        "height": 290,
+        "width": 610,
+        "color": 5
+      },
+      "id": "4eb3cdd3-c2a9-4c55-af5b-540349637cb7",
+      "name": "Nota - 02 · ESTADO Y ALMACENAMIENTO",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        768,
+        624
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 03 · PREPARACIÓN Y BUCLE\n\n🔁 **PROCESAMIENTO DE 9 PRODUCTOS**\n\nEl flujo prepara los productos y procesa uno a la vez.\nNo cambies conexiones del bucle si solo querés personalizar prompts.\n\nPara modificar la cantidad de productos se requieren cambios de lógica; esta versión está preparada para 9.",
+        "height": 290,
+        "width": 610,
+        "color": 5
+      },
+      "id": "3ff67efa-8a23-4815-9091-c362ae1baf7d",
+      "name": "Nota - 03 · PREPARACIÓN Y BUCLE",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1408,
+        624
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 04 · CLOUDFLARE: TU CUENTA Y TUS PROMPTS\n\n1. Creá TU token de Workers AI y guardalo en **Credentials → Header Auth** de n8n.\n   Header: `Authorization` · Value: `Bearer TU_TOKEN` (solo en credenciales privadas).\n2. Asigná esa credencial a **AMBOS** nodos `CF - PORTADA (FLUX.2)` y `CF - COLLAGE (FLUX.2)`.\n3. Reemplazá `YOUR_CLOUDFLARE_ACCOUNT_ID` en la URL de ambos nodos con TU ID de cuenta.\n4. Para cambiar el diseño, editá únicamente el campo **`prompt`** de cada nodo.\n5. Verificá modelo, cuota, dimensiones y disponibilidad en tu cuenta.\n\n⚠️ No pegues tokens en parámetros, notas ni archivos del repositorio.\nLos bloqueos 3030 pueden activar imágenes de respaldo; verificá la calidad antes de publicar.",
+        "height": 460,
+        "width": 770,
+        "color": 5
+      },
+      "id": "3baf5a44-3877-4e74-9109-9e455abaa515",
+      "name": "Nota - 04 · CONFIGURACIÓN IA",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        2048,
+        448
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 05 · IMÁGENES Y RESULTADOS\n\n🖼️ **COMPOSICIÓN Y ENTREGA**\n\nLos nodos de imagen redimensionan y componen la portada.\n`COMPONER PORTADA - TEXTOS EXACTOS` coloca nombre e ID.\nEl flujo prepara 18 archivos y los envía por Telegram.\n\nRevisá cada resultado antes de publicarlo.",
+        "height": 290,
+        "width": 740,
+        "color": 5
+      },
+      "id": "6d40e297-6def-46fa-b818-d5888497edbe",
+      "name": "Nota - 05 · IMÁGENES Y RESULTADOS",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        2448,
+        1872
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 🚀 EMPEZÁ ACÁ — MAPA DE CONFIGURACIÓN\n\n**Este workflow es una plantilla pública. Usá TUS cuentas y TU bot.** Primero completá estos pasos; después ejecutá una prueba.\n\n| Qué configurar | Nodos exactos / dónde hacer clic |\n| --- | --- |\n| **1 · Bot y token de Telegram** | Creá un bot con **@BotFather**. En n8n creá una credencial **Telegram API** y asignala a: `Telegram Trigger`, `Get a file`, `Telegram - pedir siguiente`, `Telegram - corregir formato`, `Send a document` y `Send a text message`. |\n| **2 · Autorizar tu chat privado** | `Normalizar entrada` → código JavaScript → reemplazá `YOUR_TELEGRAM_CHAT_ID` por tu ID real **entre las comillas existentes**. Sin esto el bot ignora mensajes. |\n| **3 · Crear la Data Table** | Creá `Ciclos_Afiliados` con 5 columnas: `chat_id` (texto), `estado` (texto), `cantidad` (número), `productos_json` (texto), `ciclo_id` (texto). Elegí tu tabla en `Leer ciclo guardado` y `Guardar estado`. |\n| **4 · API token de Cloudflare** | Creá una credencial **Header Auth** en n8n (`Authorization` / `Bearer TU_TOKEN`) y asignala a `CF - PORTADA (FLUX.2)` y `CF - COLLAGE (FLUX.2)`. **Nunca pegues el token en el JSON.** |\n| **5 · Cloudflare Account ID** | En los **mismos dos** nodos `CF - ...`, campo **URL**, reemplazá `YOUR_CLOUDFLARE_ACCOUNT_ID` por tu ID de cuenta. El ID de cuenta **no es** el token. |\n| **6 · Editar prompts (opcional)** | `CF - PORTADA (FLUX.2)` y `CF - COLLAGE (FLUX.2)` → Body Parameters → campo **`prompt`**. Conservá las expresiones de n8n que incorporan datos del producto. |\n| **7 · Diseñar textos de portada (opcional)** | `COMPONER PORTADA - TEXTOS EXACTOS` → operaciones de edición de imagen. No borres los campos que muestran el nombre y el código. |\n\n**Antes de activar:** comprobá que n8n tenga URL **HTTPS pública** para el webhook de Telegram, que las credenciales estén asociadas y que la tabla sea accesible. Esta versión está preparada para **9 productos** y puede devolver imágenes de respaldo si Cloudflare bloquea generaciones.\n\n**Guía completa:** abrí `docs/GUIA_CONFIGURACION.md` en el repositorio. **Seguridad:** no publiques exportaciones ya configuradas ni capturas con tokens, IDs o datos personales.\n",
+        "height": 600,
+        "width": 2050
+      },
+      "id": "3524d603-a580-4282-80c9-3c79e1fd00c9",
+      "name": "Nota - 00 · EMPEZÁ ACÁ - MAPA DE CONFIGURACIÓN",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -32,
+        -96
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Telegram Trigger": {
+      "main": [
+        [
+          {
+            "node": "Normalizar entrada",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalizar entrada": {
+      "main": [
+        [
+          {
+            "node": "Leer ciclo guardado",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Leer ciclo guardado": {
+      "main": [
+        [
+          {
+            "node": "Gestionar ciclo y productos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gestionar ciclo y productos": {
+      "main": [
+        [
+          {
+            "node": "Guardar o responder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Guardar o responder": {
+      "main": [
+        [
+          {
+            "node": "Guardar estado",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Telegram - corregir formato",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Guardar estado": {
+      "main": [
+        [
+          {
+            "node": "Telegram - pedir siguiente",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telegram - pedir siguiente": {
+      "main": [
+        [
+          {
+            "node": "Preparar 9 solicitudes individuales IA",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preparar 9 solicitudes individuales IA": {
+      "main": [
+        [
+          {
+            "node": "UNO por UNO - Bucle IA (pendiente)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "UNO por UNO - Bucle IA (pendiente)": {
+      "main": [
+        [
+          {
+            "node": "Preparar 18 Imagenes",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Get a file",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get a file": {
+      "main": [
+        [
+          {
+            "node": "Reducir foto para Cloudflare",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Guardar Portada": {
+      "main": [
+        [
+          {
+            "node": "Formato final 1080x1350 - Portada",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Guardar Collage": {
+      "main": [
+        [
+          {
+            "node": "Formato final 1080x1350 - Collage",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge": {
+      "main": [
+        [
+          {
+            "node": "Resultado del Producto",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resultado del Producto": {
+      "main": [
+        [
+          {
+            "node": "UNO por UNO - Bucle IA (pendiente)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preparar 18 Imagenes": {
+      "main": [
+        [
+          {
+            "node": "Send a document",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send a document": {
+      "main": [
+        [
+          {
+            "node": "Send a text message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reducir foto para Cloudflare": {
+      "main": [
+        [
+          {
+            "node": "Vincular datos y foto",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Vincular datos y foto": {
+      "main": [
+        [
+          {
+            "node": "CF - PORTADA (FLUX.2)",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "CF - COLLAGE (FLUX.2)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CF - PORTADA (FLUX.2)": {
+      "main": [
+        [
+          {
+            "node": "Guardar Portada",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CF - COLLAGE (FLUX.2)": {
+      "main": [
+        [
+          {
+            "node": "Guardar Collage",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Formato final 1080x1350 - Portada": {
+      "main": [
+        [
+          {
+            "node": "COMPONER PORTADA - TEXTOS EXACTOS",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Formato final 1080x1350 - Collage": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "COMPONER PORTADA - TEXTOS EXACTOS": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  }
+}

@@ -1,0 +1,29 @@
+# Secrets / local environment
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.local.json
+*.private.json
+*.personal.json
+*.credentials.json
+credentials*.json
+executions*.json
+*-execution*.json
+*.sqlite
+*.sqlite3
+*.db
+
+# Runtime and development files
+node_modules/
+__pycache__/
+*.pyc
+*.log
+.DS_Store
+Thumbs.db
+
+# Keep actual exports and backups OUTSIDE this repository.
+# .gitignore is not a substitute for reviewing git diff --cached.
